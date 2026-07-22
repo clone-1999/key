@@ -1,7 +1,6 @@
 import os
 from fastapi import FastAPI, HTTPException, Security, Depends
-from fastapi.security.api_key import APIKeyHeader
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse
 import yt_dlp
 from supabase import create_client, Client
 
@@ -17,6 +16,7 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 API_KEY = "999coresapikey" 
+DOWNLOAD_DIR = "downloads"
 
 @app.get("/")
 def home():
@@ -37,23 +37,29 @@ async def download_media(url: str, type: str = "audio", api_key: str = None):
     if not url:
         raise HTTPException(status_code=400, detail="YouTube URL or Video ID is required.")
 
-    # Video ID သာပေးပို့လာလျှင် Full URL သို့ ပြောင်းရန်
     if not url.startswith("http"):
         youtube_url = f"https://www.youtube.com/watch?v={url}"
     else:
         youtube_url = url
 
-    # yt-dlp options (Audio သို့မဟုတ် Video အလိုက် format ရွေးချယ်ရန်)
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    ext = "mp3" if type == "audio" else "mp4"
+    file_path = os.path.join(DOWNLOAD_DIR, f"{url}.{ext}")
+
+    # ဖိုင်ရှိပြီးသားဆိုရင် တိုက်ရိုက်ပြန်ပေးရန်
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        return FileResponse(file_path, media_type="audio/mpeg" if type == "audio" else "video/mp4")
+
     ydl_opts = {
         'format': 'bestaudio/best' if type == 'audio' else 'bestvideo+bestaudio/best',
+        'outtmpl': file_path.rsplit('.', 1)[0],
         'noplaylist': True,
         'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False)
-            stream_url = info.get('url')
+            info = ydl.extract_info(youtube_url, download=True)
             title = info.get('title')
 
         # Supabase ထဲသို့ Stats မှတ်တမ်းတင်ခြင်း
@@ -65,8 +71,11 @@ async def download_media(url: str, type: str = "audio", api_key: str = None):
         except Exception as db_error:
             print(f"Database logging error: {db_error}")
 
-        # Bot ဆီသို့ Direct Stream Link သို့ Redirect လုပ်ပေးခြင်း
-        return RedirectResponse(url=stream_url)
+        # ဖိုင်အစစ်ကို Bot ဆီသို့ ပြန်ပို့ပေးခြင်း
+        if os.path.exists(file_path):
+            return FileResponse(file_path, media_type="audio/mpeg" if type == "audio" else "video/mp4")
+        
+        raise HTTPException(status_code=500, detail="File download failed.")
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch stream: {str(e)}")
