@@ -1,108 +1,91 @@
 import os
-import time
-import asyncio
-from fastapi import FastAPI, HTTPException, Security, Header, BackgroundTasks
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel
 import yt_dlp
+from supabase import create_client, Client
 
-app = FastAPI(title="Pro Music & Video Downloader API")
+app = FastAPI(
+    title="999Cores Music & Video Streaming API",
+    description="Custom YouTube Audio/Video Streaming API with Supabase Stats & API Key Authentication.",
+    version="1.0.0"
+)
 
-# API Key ကို Environment Variable ကနေ ယူပါမည်
-API_KEY = os.getenv("API_KEY", "your_secret_api_key_here")
 
-# ဒေါင်းလုဒ်လုပ်မည့် ဖိုင်တွဲ ဖန်တီးခြင်း
-DOWNLOAD_DIR = "downloads"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+SUPABASE_URL = "https://iikjhawlpfsenuizxwke.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlpa2poYXdscGZzZW51aXp4d2tlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3MjY4NDUsImV4cCI6MjEwMDMwMjg0NX0.YfRG36NJeeAgEqWcpVBnAWF9DExTyM_5tfEtJc_AENs"
 
-# ဒေါင်းထားတဲ့ ဖိုင်တွေကို URL အနေနဲ့ လှမ်းယူလို့ရအောင် Static File အဖြစ် သတ်မှတ်ခြင်း
-app.mount("/files", StaticFiles(directory=DOWNLOAD_DIR), name="files")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- ၇ ရက်တစ်ခါ ဖိုင်ဟောင်းများ ရှင်းလင်းသည့် စနစ် (Auto Cleanup) ---
-async def cleanup_old_files():
-    while True:
-        now = time.time()
-        # 7 Days in seconds = 7 * 24 * 60 * 60 = 604800
-        for filename in os.listdir(DOWNLOAD_DIR):
-            filepath = os.path.join(DOWNLOAD_DIR, filename)
-            if os.path.isfile(filepath):
-                if now - os.path.getmtime(filepath) > 604800:
-                    try:
-                        os.remove(filepath)
-                        print(f"🗑️ ၇ ရက်ကျော်သွား၍ ဖျက်လိုက်သော ဖိုင်: {filename}")
-                    except Exception as e:
-                        print(f"Error deleting file: {e}")
-        
-        # ၁ ရက် (၂၄ နာရီ) ပြည့်တိုင်း တစ်ခါ ပြန်စစ်ပါမည် (86400 seconds)
-        await asyncio.sleep(86400)
 
-@app.on_event("startup")
-async def startup_event():
-    # Server စပွင့်တာနဲ့ File ရှင်းတဲ့စနစ်ကို နောက်ကွယ်မှာ အလုပ်လုပ်ခိုင်းထားမည်
-    asyncio.create_task(cleanup_old_files())
+API_KEY_NAME = "access_token"
+API_KEY = "999coresapikey" 
 
-# --- API Key စစ်ဆေးခြင်း ---
-def verify_api_key(x_api_key: str = Header(...)):
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="❌ မှားယွင်းသော API Key ဖြစ်ပါသည်။ Access Denied.")
-    return x_api_key
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-# --- ပင်မ Download API ---
-@app.get("/api/download")
-def download_media(url: str, type: str = "audio", req_url: str = Security(verify_api_key)):
-    """
-    type နေရာတွင် 'audio' သို့မဟုတ် 'video' ဟု ထည့်သွင်းနိုင်ပါသည်။
-    """
+async def get_api_key(api_key_header: str = Security(api_key_header)):
+    if api_key_header == API_KEY:
+        return api_key_header
+    raise HTTPException(
+        status_code=403,
+        detail="Could not validate credentials. Invalid or missing API Key."
+    )
+
+class StreamRequest(BaseModel):
+    url: str
+
+@app.get("/")
+def home():
+    return {
+        "status": "online",
+        "message": "Welcome to Custom YouTube Streaming API!",
+        "endpoints": {
+            "stream": "/api/v1/stream (POST)"
+        }
+    }
+
+@app.post("/api/v1/stream")
+async def get_stream_url(data: StreamRequest, api_key: str = Depends(get_api_key)):
+    youtube_url = data.url
+    
+    if not youtube_url:
+        raise HTTPException(status_code=400, detail="YouTube URL is required.")
+
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+    }
+
     try:
-        # 1. ပထမဆုံး Video ID ကို အရင်ယူပါမည် (ဖိုင်ရှိ/မရှိ စစ်ဆေးရန်)
-        # cookies.txt ရှိရင် ထည့်သုံးမည်
-        cookie_file = 'cookies.txt' if os.path.exists('cookies.txt') else None
-        
-        extract_opts = {'quiet': True, 'cookiefile': cookie_file}
-        with yt_dlp.YoutubeDL(extract_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            video_id = info['id']
-            video_title = info.get('title', 'Unknown Title')
-
-        # 2. File အမျိုးအစားပေါ်မူတည်ပြီး နာမည်သတ်မှတ်ခြင်း
-        ext = "mp3" if type == "audio" else "mp4"
-        filename = f"{video_id}.{ext}"
-        filepath = os.path.join(DOWNLOAD_DIR, filename)
-
-        # 3. ⚡ ကက်ရှ် (Cache) စနစ် - ဖိုင်ရှိပြီးသားဆိုရင် ထပ်မဒေါင်းတော့ဘဲ ချက်ချင်းပို့ပေးမည်
-        if os.path.exists(filepath):
-            return JSONResponse({
-                "status": "success",
-                "message": "⚡ Cached file retrieved immediately!",
-                "title": video_title,
-                "file_url": f"/files/{filename}"
-            })
-
-        # 4. ဖိုင်မရှိသေးရင် yt-dlp ဖြင့် အသစ်ဒေါင်းလုဒ်လုပ်မည်
-        if type == "audio":
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
-                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
-                'cookiefile': cookie_file,
-            }
-        else: # video
-            ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
-                'cookiefile': cookie_file,
-                'max_filesize': 200 * 1024 * 1024, # 200MB ထက်ကြီးရင် မဒေါင်းရန်
-            }
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(youtube_url, download=False)
+            stream_url = info.get('url')
+            title = info.get('title')
+            duration = info.get('duration')
+            thumbnail = info.get('thumbnail')
 
-        return JSONResponse({
-            "status": "success",
-            "message": "✅ ဒေါင်းလုဒ်လုပ်ပြီးပါပြီ",
-            "title": video_title,
-            "file_url": f"/files/{filename}"
-        })
+        
+        try:
+            supabase.table("api_stats").insert({
+                "video_title": title,
+                "video_url": youtube_url
+            }).execute()
+        except Exception as db_error:
+            print(f"Database logging error: {db_error}")
+
+        return {
+            "success": True,
+            "title": title,
+            "duration": duration,
+            "thumbnail": thumbnail,
+            "stream_url": stream_url
+        }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to fetch stream: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
