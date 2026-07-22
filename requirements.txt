@@ -1,4 +1,6 @@
 fastapi
 uvicorn
 yt-dlp
-ffmpeg-python
+supabase
+pydantic
+
