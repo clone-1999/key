@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
-from pydantic import BaseModel
+from fastapi.responses import RedirectResponse
 import yt_dlp
 from supabase import create_client, Client
 
@@ -11,28 +11,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-
 SUPABASE_URL = "https://iikjhawlpfsenuizxwke.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlpa2poYXdscGZzZW51aXp4d2tlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3MjY4NDUsImV4cCI6MjEwMDMwMjg0NX0.YfRG36NJeeAgEqWcpVBnAWF9DExTyM_5tfEtJc_AENs"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-
-API_KEY_NAME = "access_token"
 API_KEY = "999coresapikey" 
-
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-
-async def get_api_key(api_key_header: str = Security(api_key_header)):
-    if api_key_header == API_KEY:
-        return api_key_header
-    raise HTTPException(
-        status_code=403,
-        detail="Could not validate credentials. Invalid or missing API Key."
-    )
-
-class StreamRequest(BaseModel):
-    url: str
 
 @app.get("/")
 def home():
@@ -40,20 +24,28 @@ def home():
         "status": "online",
         "message": "Welcome to Custom YouTube Streaming API!",
         "endpoints": {
-            "stream": "/api/v1/stream (POST)"
+            "download": "/download (GET)"
         }
     }
 
-@app.post("/api/v1/stream")
-async def get_stream_url(data: StreamRequest, api_key: str = Depends(get_api_key)):
-    youtube_url = data.url
+@app.get("/download")
+async def download_media(url: str, type: str = "audio", api_key: str = None):
+    # API Key စစ်ဆေးခြင်း
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
     
-    if not youtube_url:
-        raise HTTPException(status_code=400, detail="YouTube URL is required.")
+    if not url:
+        raise HTTPException(status_code=400, detail="YouTube URL or Video ID is required.")
 
-    
+    # Video ID သာပေးပို့လာလျှင် Full URL သို့ ပြောင်းရန်
+    if not url.startswith("http"):
+        youtube_url = f"https://www.youtube.com/watch?v={url}"
+    else:
+        youtube_url = url
+
+    # yt-dlp options (Audio သို့မဟုတ် Video အလိုက် format ရွေးချယ်ရန်)
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format': 'bestaudio/best' if type == 'audio' else 'bestvideo+bestaudio/best',
         'noplaylist': True,
         'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
     }
@@ -63,10 +55,8 @@ async def get_stream_url(data: StreamRequest, api_key: str = Depends(get_api_key
             info = ydl.extract_info(youtube_url, download=False)
             stream_url = info.get('url')
             title = info.get('title')
-            duration = info.get('duration')
-            thumbnail = info.get('thumbnail')
 
-        
+        # Supabase ထဲသို့ Stats မှတ်တမ်းတင်ခြင်း
         try:
             supabase.table("api_stats").insert({
                 "video_title": title,
@@ -75,13 +65,8 @@ async def get_stream_url(data: StreamRequest, api_key: str = Depends(get_api_key
         except Exception as db_error:
             print(f"Database logging error: {db_error}")
 
-        return {
-            "success": True,
-            "title": title,
-            "duration": duration,
-            "thumbnail": thumbnail,
-            "stream_url": stream_url
-        }
+        # Bot ဆီသို့ Direct Stream Link သို့ Redirect လုပ်ပေးခြင်း
+        return RedirectResponse(url=stream_url)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch stream: {str(e)}")
